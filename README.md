@@ -6,18 +6,20 @@ It provides a **web interface** to visualize live fire statuses on a map, receiv
 ---
 
 ## 📁 Project Structure
+```bash
 mission_control_dashboard/
-│
-├── backend/ # Django REST API (serves fire data and LLM responses)
-│ ├── mission_control/ # Django project configuration
-│ └── api/ # REST API endpoints
-│
-└── frontend/ # React web dashboard (map, notifications, chat)
-├── src/
-├── public/
-└── package.json
+|
+|-- backend/ # Django REST API (serves fire data and LLM responses)
+| |-- mission_control/ # Django project configuration
+| |-- api/ # REST API endpoints
+|
+|-- frontend/ # React web dashboard (map, notifications, chat)
+|-- src/
+|-- public/
+|-- package.json
 
 ---
+```
 
 ## ⚙️ Prerequisites
 
@@ -40,6 +42,7 @@ Before running the project, ensure you have the following installed:
     source venv/bin/activate
     # Windows
     venv\Scripts\activate
+    ```
 2. **Create and activate a virtual environment**
     ```bash
     python -m venv venv
@@ -47,30 +50,38 @@ Before running the project, ensure you have the following installed:
     source venv/bin/activate
     # Windows
     venv\Scripts\activate
+    ```
 3. **Install dependencies**
     ```bash
     pip install django djangorestframework django-cors-headers
+    ```
 4. **Run the Django development server**
     ```bash
     python manage.py runserver
+    ```
 5. **Once running, visit:**
     ```bash
     http://127.0.0.1:8000/api/fire-status/
+    ```
   You should see mock fire data returned as JSON.
 
 ## 🐍 Frontend Setup (React)
 1. **Open a new terminal (keep the backend running) and navigate to the frontend directory:**
     ```bash
     cd frontend
+    ```
 2. **Install dependencies:**
     ```bash
     npm install
+    ```
 3. **Start the React development server:**
     ```bash
     npm start
+    ```
 4. **Once running, open your browser at:**
     ```bash
     http://localhost:3000
+    ```
 You should see the dashboard with:
 - live map (Leaflet)
 - Notifications
