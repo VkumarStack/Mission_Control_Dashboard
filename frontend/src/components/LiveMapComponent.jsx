@@ -1,22 +1,13 @@
-import React, { useState } from 'react';
-import { MapContainer, TileLayer, Circle, Marker, Popup, useMap } from 'react-leaflet';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { fetchDataBetween, fetchRecentData } from '../api/apiClient';
+import { MapContainer, TileLayer, Circle, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
-// Mock data
-const mockFireData = [
-  { id: 'F-1', lat: 34.0899, lng: -118.4639, intensity: 85, status: 'Active', size: 75 },
-  { id: 'F-2', lat: 34.0599, lng: -118.4239, intensity: 65, status: 'Active', size: 45 },
-  { id: 'F-3', lat: 34.0799, lng: -118.4039, intensity: 90, status: 'Critical', size: 120 },
-  { id: 'F-4', lat: 34.0499, lng: -118.4539, intensity: 50, status: 'Contained', size: 30 }
-];
+import 'leaflet/dist/leaflet.css';
 
-const mockDroneData = [
-  { id: 'D-1', lat: 34.0850, lng: -118.4550, battery: 85, water: 60, status: 'Active' },
-  { id: 'D-2', lat: 34.0650, lng: -118.4350, battery: 45, water: 90, status: 'Active' },
-  { id: 'D-3', lat: 34.0750, lng: -118.4150, battery: 92, water: 88, status: 'Active' },
-  { id: 'D-4', lat: 34.0550, lng: -118.4450, battery: 25, water: 55, status: 'Low Battery' },
-  { id: 'D-5', lat: 34.0700, lng: -118.4300, battery: 68, water: 15, status: 'Low Water' },
-  { id: 'D-6', lat: 34.0820, lng: -118.4420, battery: 5, water: 8, status: 'Critical' }
-];
+// Timeline config
+const WINDOW_MS = 24 * 60 * 60 * 1000; // 24h
+const PIN_THRESHOLD_MS = 1500; // if user is within 1.5s of end, keep pinned to end
 
 // Helper function to get color based on resource level
 const getResourceColor = (level) => {
@@ -31,6 +22,16 @@ const getFireColor = (intensity) => {
   if (intensity >= 80) return '#ff3b3b';
   if (intensity >= 60) return '#ff6b35';
   return '#ff9b3b';
+};
+
+// Helper function to format timestamp
+const formatTime = (timestamp) => {
+  const date = new Date(timestamp);
+  const hours = date.getHours();
+  const minutes = date.getMinutes().toString().padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours % 12 || 12;
+  return `${displayHours}:${minutes} ${ampm}`;
 };
 
 // Custom drone icon (triangle)
@@ -74,7 +75,199 @@ const LiveMapComponent = () => {
   const [showFires, setShowFires] = useState(true);
   const [showDrones, setShowDrones] = useState(true);
   const [showResources, setShowResources] = useState(true);
-  const [currentTime, setCurrentTime] = useState(50); // 0-100 for slider
+  
+  // Timeline state
+  const queryClient = useQueryClient();
+  
+  // Moving 24h window state, driven by latest incoming data
+  const [windowEnd, setWindowEnd] = useState(() => Date.now());
+  const windowStart = windowEnd - WINDOW_MS;
+  const totalRange = WINDOW_MS;
+  
+  // Current playback time on the slider
+  const [currentTime, setCurrentTime] = useState(() => windowEnd);
+  const wasPinnedToEndRef = useRef(true); // track if user was at end to keep pinning behavior
+
+  // Playback state
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const intervalRef = useRef(null);
+
+  // Fetch the latest 24h once and keep updated via WS merges
+  const { data: history = { fires: [], drones: [] }, isLoading } = useQuery({
+    queryKey: ['recent-history'],
+    queryFn: fetchRecentData,
+    staleTime: 1000 * 60 * 5,
+    refetchOnWindowFocus: false,
+  });
+ 
+   // helper to merge incoming item into cached history safely
+   const mergeIncomingToHistory = (incoming) => {
+     const key = incoming.type === 'fire' ? 'fires' : 'drones';
+     queryClient.setQueryData(['recent-history'], (old = { fires: [], drones: [] }) => {
+       const merged = [...(old[key] || []), incoming.payload];
+       const map = new Map();
+       merged.forEach(item => {
+         const mapKey = `${item.id}|${item.timestamp}`;
+         map.set(mapKey, item);
+       });
+       const deduped = Array.from(map.values()).sort((a,b) => a.timestamp - b.timestamp);
+       return { ...old, [key]: deduped };
+     });
+   };
+
+   // websocket: connect and listen for updates
+   useEffect(() => {
+     const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//localhost:8000/ws/updates/`;
+     let ws;
+     try {
+       ws = new WebSocket(wsUrl);
+     } catch (err) {
+       console.warn('WebSocket connection failed', err);
+       return;
+     }
+
+     ws.addEventListener('open', () => {
+       console.debug('[WS] connected to', wsUrl);
+     });
+
+     ws.addEventListener('message', (ev) => {
+       try {
+         const data = JSON.parse(ev.data);
+         // expect { type: 'fire'|'drone', payload: { ... } }
+         if (data && (data.type === 'fire' || data.type === 'drone') && data.payload) {
+           mergeIncomingToHistory(data);
+         }
+       } catch (e) {
+         console.warn('Invalid WS message', e);
+       }
+     });
+
+     ws.addEventListener('close', () => {
+       console.debug('[WS] closed');
+     });
+
+     ws.addEventListener('error', (err) => {
+       console.warn('[WS] error', err);
+     });
+
+     return () => {
+       try { ws.close(); } catch (e) { /* ignore */ }
+     };
+   }, [queryClient]);
+
+   // Whenever history changes (initial load or WS merges), slide the 24h window forward
+   const latestTimestamp = useMemo(() => {
+     const lastFire = history?.fires?.length ? history.fires[history.fires.length - 1]?.timestamp : 0;
+     const lastDrone = history?.drones?.length ? history.drones[history.drones.length - 1]?.timestamp : 0;
+     return Math.max(lastFire || 0, lastDrone || 0);
+   }, [history?.fires, history?.drones]);
+
+   useEffect(() => {
+     if (!latestTimestamp) return;
+     setWindowEnd(prevEnd => {
+       // Update window end if new data is more recent
+       if (latestTimestamp <= prevEnd) return prevEnd;
+       const newEnd = latestTimestamp;
+       const oldEnd = prevEnd;
+
+       // Determine if user was effectively at the end
+       const wasPinned = Math.abs(currentTime - oldEnd) <= PIN_THRESHOLD_MS || currentTime >= oldEnd - PIN_THRESHOLD_MS;
+       wasPinnedToEndRef.current = wasPinned;
+
+       // If pinned, move currentTime with the window; otherwise clamp into the new window
+       setCurrentTime(prevTime => {
+         if (wasPinned) return newEnd;
+         const newStart = newEnd - WINDOW_MS;
+         return Math.min(Math.max(prevTime, newStart), newEnd);
+       });
+
+       return newEnd;
+     });
+   }, [latestTimestamp]); // runs after cache updates from WS or initial fetch
+
+  // Helper: pick most recent record per id with timestamp <= targetTime
+  const pickMostRecentBefore = (dataArray, targetTime) => {
+    const grouped = dataArray.reduce((acc, item) => {
+      if (!acc[item.id]) acc[item.id] = [];
+      acc[item.id].push(item);
+      return acc;
+    }, {});
+    const result = [];
+    Object.values(grouped).forEach(list => {
+      const candidate = list
+        .filter(it => it.timestamp <= targetTime)
+        .sort((a, b) => a.timestamp - b.timestamp)
+        .pop();
+      if (candidate) result.push(candidate);
+    });
+    return result;
+  };
+
+  // Derive current snapshot for rendering from cached history
+  const currentFireData = useMemo(() => pickMostRecentBefore(history.fires || [], currentTime), [history.fires, currentTime]);
+  const currentDroneData = useMemo(() => pickMostRecentBefore(history.drones || [], currentTime), [history.drones, currentTime]);
+
+  // Autoplay logic
+  useEffect(() => {
+    if (!isPlaying) {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      return;
+    }
+
+    const increment = (totalRange / 100) * playbackSpeed; // Move forward based on speed
+    intervalRef.current = setInterval(() => {
+      setCurrentTime(prev => {
+        const next = prev + increment;
+        if (next >= windowEnd) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+          setIsPlaying(false);
+          return windowEnd;
+        }
+        return next;
+      });
+    }, 200); // 200ms update interval
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [isPlaying, playbackSpeed, windowEnd, totalRange]);
+
+  // Toggle play/pause
+  const togglePlayPause = () => {
+    if (isPlaying) {
+      setIsPlaying(false);
+    } else {
+      // If at the end, restart from beginning
+      if (Math.abs(currentTime - windowEnd) <= PIN_THRESHOLD_MS) {
+        setCurrentTime(windowStart);
+      }
+      setIsPlaying(true);
+    }
+  };
+
+  // Handle slider change
+  const handleSliderChange = (e) => {
+    const newTime = sliderValueToTime(Number(e.target.value));
+    setCurrentTime(newTime);
+    setIsPlaying(false); // pause when user manually adjusts
+  };
+
+  // Slider helpers now use the moving window
+  const timeToSliderValue = (time) => {
+     if (totalRange <= 0) return 0;
+     return ((time - windowStart) / totalRange) * 100; // 0..100
+   };
+   const sliderValueToTime = (value) => {
+     return windowStart + (value / 100) * totalRange;
+   };
 
   return (
     <div className="w-full h-screen p-4" style={{ backgroundColor: '#0a0e1a' }}>
@@ -178,29 +371,33 @@ const LiveMapComponent = () => {
           <div className="mt-auto space-y-2">
             <div className="flex justify-between text-sm">
               <span className="text-gray-400">Active Fires:</span>
-              <span className="text-orange-500 font-bold">{mockFireData.length}</span>
+              <span className="text-orange-500 font-bold">{currentFireData.length}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-gray-400">Drones Online:</span>
-              <span className="text-cyan-400 font-bold">{mockDroneData.length}</span>
+              <span className="text-cyan-400 font-bold">{currentDroneData.length}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-gray-400">Avg Battery:</span>
               <span className="text-green-400 font-bold">
-                {Math.round(mockDroneData.reduce((sum, d) => sum + d.battery, 0) / mockDroneData.length)}%
+                {currentDroneData.length > 0 
+                  ? Math.round(currentDroneData.reduce((sum, d) => sum + d.battery, 0) / currentDroneData.length)
+                  : 0}%
               </span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-gray-400">Avg Water:</span>
               <span className="text-yellow-400 font-bold">
-                {Math.round(mockDroneData.reduce((sum, d) => sum + d.water, 0) / mockDroneData.length)}%
+                {currentDroneData.length > 0 
+                  ? Math.round(currentDroneData.reduce((sum, d) => sum + d.water, 0) / currentDroneData.length)
+                  : 0}%
               </span>
             </div>
           </div>
         </div>
         
         {/* Map Container */}
-        <div className="flex-1 flex flex-col bg-gray-800 rounded-lg overflow-hidden">
+        <div className="flex-1 flex flex-col rounded-lg overflow-hidden" style={{ backgroundColor: '#1f2937' }}>
           <div className="flex-1">
             <MapContainer 
               center={[34.0699, -118.4439]} 
@@ -214,9 +411,9 @@ const LiveMapComponent = () => {
               />
               
               {/* Fire Markers */}
-              {showFires && mockFireData.map(fire => (
+              {showFires && currentFireData.map(fire => (
                 <Circle
-                  key={fire.id}
+                  key={`${fire.id}-${fire.timestamp}`}
                   center={[fire.lat, fire.lng]}
                   radius={fire.size * 10}
                   pathOptions={{
@@ -231,15 +428,16 @@ const LiveMapComponent = () => {
                       <strong>{fire.id}</strong><br/>
                       Status: {fire.status}<br/>
                       Intensity: {fire.intensity}%<br/>
-                      Size: {fire.size} acres
+                      Size: {fire.size} acres<br/>
+                      Time: {formatTime(fire.timestamp)}
                     </div>
                   </Popup>
                 </Circle>
               ))}
               
               {/* Drone Markers */}
-              {showDrones && mockDroneData.map(drone => (
-                <React.Fragment key={drone.id}>
+              {showDrones && currentDroneData.map(drone => (
+                <React.Fragment key={`${drone.id}-${drone.timestamp}`}>
                   {/* Main drone marker */}
                   <Marker 
                     position={[drone.lat, drone.lng]} 
@@ -250,7 +448,8 @@ const LiveMapComponent = () => {
                         <strong>{drone.id}</strong><br/>
                         Status: {drone.status}<br/>
                         Battery: {drone.battery}%<br/>
-                        Water: {drone.water}%
+                        Water: {drone.water}%<br/>
+                        Time: {formatTime(drone.timestamp)}
                       </div>
                     </Popup>
                   </Marker>
@@ -277,15 +476,26 @@ const LiveMapComponent = () => {
           </div>
           
           {/* Timeline Control */}
-          <div className="bg-gray-800 p-4 border-t border-gray-700">
+          <div className="p-4 border-t border-gray-700" style={{ backgroundColor: '#1f2937' }}>
             <div className="flex items-center gap-4">
               <h3 className="text-white font-semibold whitespace-nowrap">Historical Timeline</h3>
               
               {/* Play/Pause Button */}
-              <button className="w-10 h-10 bg-gray-700 rounded flex items-center justify-center hover:bg-gray-600">
-                <svg width="16" height="16" viewBox="0 0 16 16">
-                  <polygon points="3,2 3,14 13,8" fill="#00d4ff"/>
-                </svg>
+              <button 
+                onClick={togglePlayPause}
+                className="w-10 h-10 rounded flex items-center justify-center hover:bg-gray-600" 
+                style={{ backgroundColor: '#374151' }}
+              >
+                {isPlaying ? (
+                  <svg width="16" height="16" viewBox="0 0 16 16">
+                    <rect x="3" y="2" width="4" height="12" fill="#00d4ff"/>
+                    <rect x="9" y="2" width="4" height="12" fill="#00d4ff"/>
+                  </svg>
+                ) : (
+                  <svg width="16" height="16" viewBox="0 0 16 16">
+                    <polygon points="3,2 3,14 13,8" fill="#00d4ff"/>
+                  </svg>
+                )}
               </button>
               
               {/* Slider */}
@@ -294,27 +504,34 @@ const LiveMapComponent = () => {
                   type="range"
                   min="0"
                   max="100"
-                  value={currentTime}
-                  onChange={(e) => setCurrentTime(Number(e.target.value))}
-                  className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  value={timeToSliderValue(currentTime)}
+                  onChange={handleSliderChange}
+                  className="w-full h-2 rounded-lg appearance-none cursor-pointer accent-cyan-400"
+                  style={{ backgroundColor: '#374151' }}
                 />
                 <div className="flex justify-between text-xs text-gray-400">
-                  <span>12:00 PM</span>
+                  <span>{formatTime(windowStart)}</span>
                   <span className="text-cyan-400 font-semibold">
-                    {Math.floor(12 + (currentTime / 100) * 6)}:{String(Math.floor((currentTime % 100) * 0.6)).padStart(2, '0')} PM
+                    {formatTime(currentTime)}
                   </span>
-                  <span>6:00 PM</span>
+                  <span>{formatTime(windowEnd)}</span>
                 </div>
               </div>
               
               {/* Speed Control */}
               <div className="flex items-center gap-2">
                 <span className="text-gray-400 text-sm">Speed:</span>
-                <select className="bg-gray-700 text-white px-3 py-1 rounded text-sm">
-                  <option>0.5x</option>
-                  <option selected>1x</option>
-                  <option>2x</option>
-                  <option>5x</option>
+                <select 
+                  value={playbackSpeed}
+                  onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
+                  className="text-white px-3 py-1 rounded text-sm" 
+                  style={{ backgroundColor: '#374151' }}
+                >
+                  <option value={0.5}>0.5x</option>
+                  <option value={1}>1x</option>
+                  <option value={2}>2x</option>
+                  <option value={5}>5x</option>
+                  <option value={10}>10x</option>
                 </select>
               </div>
             </div>

@@ -1,5 +1,5 @@
 """
-ASGI config for mission_control project.
+ASGI project for mission_control.
 
 It exposes the ASGI callable as a module-level variable named ``application``.
 
@@ -8,9 +8,19 @@ https://docs.djangoproject.com/en/5.2/howto/deployment/asgi/
 """
 
 import os
-
+import django
+from channels.routing import ProtocolTypeRouter, URLRouter
 from django.core.asgi import get_asgi_application
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'mission_control.settings')
+django.setup()
 
-application = get_asgi_application()
+django_asgi_app = get_asgi_application()
+
+# Import the project-level routing aggregator
+from mission_control import routing as app_routing
+
+application = ProtocolTypeRouter({
+    "http": django_asgi_app,
+    "websocket": URLRouter(app_routing.websocket_urlpatterns),
+})

@@ -1,14 +1,7 @@
-import LiveMapComponent from "../components/LiveMap";
-import NotificationsPanel from "../components/NotificationsPanel";
-import FireWardenChat from "../components/FireWardenChat";
+import FireMissionControlDashboard from "../components/DashboardWrapper";
 
 export default function Dashboard() {
   return (
-    <div style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px', padding: '20px'}}>
-      <h1>🚒 Mission Control Dashboard</h1>
-      <LiveMapComponent />
-      <NotificationsPanel />
-      <FireWardenChat />
-    </div>
+    <FireMissionControlDashboard />
   );
 }
