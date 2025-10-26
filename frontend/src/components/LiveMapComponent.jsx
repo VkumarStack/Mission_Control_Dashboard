@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchDataBetween, fetchRecentData } from '../api/apiClient';
+import { useQuery } from '@tanstack/react-query';
+import { fetchRecentFireDroneData } from '../api/apiClient';
 import { MapContainer, TileLayer, Circle, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -77,7 +77,6 @@ const LiveMapComponent = () => {
   const [showResources, setShowResources] = useState(true);
   
   // Timeline state
-  const queryClient = useQueryClient();
   
   // Moving 24h window state, driven by latest incoming data
   const [windowEnd, setWindowEnd] = useState(() => Date.now());
@@ -96,66 +95,11 @@ const LiveMapComponent = () => {
   // Fetch the latest 24h once and keep updated via WS merges
   const { data: history = { fires: [], drones: [] }, isLoading } = useQuery({
     queryKey: ['recent-history'],
-    queryFn: fetchRecentData,
-    staleTime: 1000 * 60 * 5,
+    queryFn: fetchRecentFireDroneData,
+    enabled: false, // Subscribes to WebSocketProvider which manages 
     refetchOnWindowFocus: false,
   });
  
-   // helper to merge incoming item into cached history safely
-   const mergeIncomingToHistory = (incoming) => {
-     const key = incoming.type === 'fire' ? 'fires' : 'drones';
-     queryClient.setQueryData(['recent-history'], (old = { fires: [], drones: [] }) => {
-       const merged = [...(old[key] || []), incoming.payload];
-       const map = new Map();
-       merged.forEach(item => {
-         const mapKey = `${item.id}|${item.timestamp}`;
-         map.set(mapKey, item);
-       });
-       const deduped = Array.from(map.values()).sort((a,b) => a.timestamp - b.timestamp);
-       return { ...old, [key]: deduped };
-     });
-   };
-
-   // websocket: connect and listen for updates
-   useEffect(() => {
-     const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//localhost:8000/ws/updates/`;
-     let ws;
-     try {
-       ws = new WebSocket(wsUrl);
-     } catch (err) {
-       console.warn('WebSocket connection failed', err);
-       return;
-     }
-
-     ws.addEventListener('open', () => {
-       console.debug('[WS] connected to', wsUrl);
-     });
-
-     ws.addEventListener('message', (ev) => {
-       try {
-         const data = JSON.parse(ev.data);
-         // expect { type: 'fire'|'drone', payload: { ... } }
-         if (data && (data.type === 'fire' || data.type === 'drone') && data.payload) {
-           mergeIncomingToHistory(data);
-         }
-       } catch (e) {
-         console.warn('Invalid WS message', e);
-       }
-     });
-
-     ws.addEventListener('close', () => {
-       console.debug('[WS] closed');
-     });
-
-     ws.addEventListener('error', (err) => {
-       console.warn('[WS] error', err);
-     });
-
-     return () => {
-       try { ws.close(); } catch (e) { /* ignore */ }
-     };
-   }, [queryClient]);
-
    // Whenever history changes (initial load or WS merges), slide the 24h window forward
    const latestTimestamp = useMemo(() => {
      const lastFire = history?.fires?.length ? history.fires[history.fires.length - 1]?.timestamp : 0;

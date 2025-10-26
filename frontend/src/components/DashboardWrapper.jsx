@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 import LiveMapComponent from './LiveMapComponent';
 import NotificationsComponent from './NotificationsComponent';
 import FireWardenChatComponent from './FireWardenChatComponent';
+import WebSocketProvider from '../providers/WebSocketProvider';
+import { fetchRecentNotifications } from '../api/apiClient';
 
 // Mock data for dashboard
 const mockDashboardData = {
@@ -125,7 +130,15 @@ const DashboardComponent = () => {
 // Main Dashboard Wrapper with Tabs
 const FireMissionControlDashboard = () => {
   const [activeTab, setActiveTab] = useState('dashboard');
-  const [unreadNotifications] = useState(3);
+
+  // Get unread notification count from cache
+  const { data = { notifications: [] } } = useQuery({
+    queryKey: ['recent-notifications'],
+    queryFn: fetchRecentNotifications,
+    enabled: false,
+  });
+
+  const unreadNotifications = data.notifications.filter(n => !n.acknowledged).length;
 
   const tabs = [
     { id: 'dashboard', label: '📊 Dashboard', icon: '📊' },
@@ -151,6 +164,12 @@ const FireMissionControlDashboard = () => {
 
   return (
     <div className="w-full h-screen flex flex-col" style={{ backgroundColor: '#0a0e1a' }}>
+      {/* Persistent WebSocket connection for the whole dashboard */}
+      <WebSocketProvider />
+      
+      {/* Toast Container */}
+      <ToastContainer theme="dark" />
+
       {/* Header */}
       <header className="w-full h-16 flex items-center justify-between px-6 p-3" style={{ backgroundColor: '#1f2937' }}>
         <h1 className="text-2xl font-bold text-orange-500">🔥 FIRE MISSION CONTROL</h1>
@@ -179,7 +198,7 @@ const FireMissionControlDashboard = () => {
             }}
           >
             {tab.label}
-            {tab.badge && (
+            {tab.badge > 0 && (
               <span 
                 className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 flex items-center justify-center text-xs font-bold text-white"
               >

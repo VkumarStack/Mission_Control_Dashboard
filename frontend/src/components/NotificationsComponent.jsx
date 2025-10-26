@@ -1,80 +1,6 @@
-import React, { useState } from 'react';
-
-// Mock notification data
-const mockNotifications = [
-  {
-    id: 1,
-    severity: 'critical',
-    title: 'Fire rapidly expanding in Sector C-2',
-    message: 'Wind speeds have increased to 22 mph. Fire F-2 has grown 40% in the last 15 minutes.',
-    timestamp: Date.now() - 120000, // 2 minutes ago
-    source: 'Fire Detection System',
-    acknowledged: false
-  },
-  {
-    id: 2,
-    severity: 'critical',
-    title: 'Drone D-06 battery critical - emergency landing initiated',
-    message: 'Battery level at 3%. Drone returning to base at reduced speed. ETA 8 minutes.',
-    timestamp: Date.now() - 300000, // 5 minutes ago
-    source: 'Drone Management System',
-    acknowledged: false
-  },
-  {
-    id: 3,
-    severity: 'high',
-    title: 'New fire detected in Sector A-7',
-    message: 'Thermal cameras detected heat signature at coordinates N41.2°, E112.8°. Size: ~5 acres.',
-    timestamp: Date.now() - 720000, // 12 minutes ago
-    source: 'Fire Detection System',
-    acknowledged: false
-  },
-  {
-    id: 4,
-    severity: 'medium',
-    title: 'Weather alert: Wind direction shifting to northeast',
-    message: 'Expected shift in 30 minutes. May affect fire spread patterns in Sectors B and C.',
-    timestamp: Date.now() - 1080000, // 18 minutes ago
-    source: 'Weather Monitoring System',
-    acknowledged: true
-  },
-  {
-    id: 5,
-    severity: 'low',
-    title: 'Drone D-12 deployed to Sector C successfully',
-    message: 'Drone reached target coordinates and began water drop operations.',
-    timestamp: Date.now() - 1500000, // 25 minutes ago
-    source: 'Drone Management System',
-    acknowledged: true
-  },
-  {
-    id: 6,
-    severity: 'info',
-    title: 'Fire containment improved in Zone 3 to 75%',
-    message: 'Containment progress increased by 10% in the last hour. Good progress.',
-    timestamp: Date.now() - 1920000, // 32 minutes ago
-    source: 'Fire Detection System',
-    acknowledged: true
-  },
-  {
-    id: 7,
-    severity: 'high',
-    title: 'Multiple drones low on water supply',
-    message: 'Drones D-03, D-08, and D-15 all below 20% water capacity. Consider rotating with fresh units.',
-    timestamp: Date.now() - 2400000, // 40 minutes ago
-    source: 'Drone Management System',
-    acknowledged: true
-  },
-  {
-    id: 8,
-    severity: 'medium',
-    title: 'Communication delay with Sector D ground team',
-    message: 'Last contact was 15 minutes ago. Attempting to re-establish connection.',
-    timestamp: Date.now() - 3000000, // 50 minutes ago
-    source: 'Communication System',
-    acknowledged: true
-  }
-];
+import React, { useState, useMemo } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { fetchRecentNotifications } from '../api/apiClient';
 
 // Helper function to get severity color
 const getSeverityColor = (severity) => {
@@ -95,8 +21,15 @@ const getSeverityLabel = (severity) => {
 
 // Notifications Component
 const NotificationsComponent = () => {
-  const [notifications, setNotifications] = useState(mockNotifications);
-  const [filter, setFilter] = useState('all'); // all, unread, critical, high, medium, low, info
+  const queryClient = useQueryClient();
+  const [filter, setFilter] = useState('all');
+
+  // Fetch notifications from cache (managed by WebSocketProvider)
+  const { data = { notifications: [] } } = useQuery({
+    queryKey: ['recent-notifications'],
+    queryFn: fetchRecentNotifications,
+    enabled: false, // WebSocketProvider manages this
+  });
 
   const formatTimeAgo = (timestamp) => {
     const diff = Date.now() - timestamp;
@@ -111,30 +44,42 @@ const NotificationsComponent = () => {
   };
 
   const handleAcknowledge = (id) => {
-    setNotifications(prev =>
-      prev.map(notif =>
-        notif.id === id ? { ...notif, acknowledged: true } : notif
-      )
-    );
+    queryClient.setQueryData(['recent-notifications'], (old = { notifications: [] }) => {
+      return {
+        notifications: old.notifications.map(notif =>
+          notif.id === id ? { ...notif, acknowledged: true } : notif
+        )
+      };
+    });
   };
 
   const handleClearRead = () => {
-    setNotifications(prev => prev.filter(notif => !notif.acknowledged));
+    queryClient.setQueryData(['recent-notifications'], (old = { notifications: [] }) => {
+      return {
+        notifications: old.notifications.filter(notif => !notif.acknowledged)
+      };
+    });
   };
 
   const handleMarkAllRead = () => {
-    setNotifications(prev =>
-      prev.map(notif => ({ ...notif, acknowledged: true }))
-    );
+    queryClient.setQueryData(['recent-notifications'], (old = { notifications: [] }) => {
+      return {
+        notifications: old.notifications.map(notif => ({ ...notif, acknowledged: true }))
+      };
+    });
   };
 
-  const filteredNotifications = notifications.filter(notif => {
-    if (filter === 'all') return true;
-    if (filter === 'unread') return !notif.acknowledged;
-    return notif.severity === filter;
-  });
+  const filteredNotifications = useMemo(() => {
+    return data.notifications.filter(notif => {
+      if (filter === 'all') return true;
+      if (filter === 'unread') return !notif.acknowledged;
+      return notif.severity === filter;
+    });
+  }, [data.notifications, filter]);
 
-  const unreadCount = notifications.filter(n => !n.acknowledged).length;
+  const unreadCount = useMemo(() => {
+    return data.notifications.filter(n => !n.acknowledged).length;
+  }, [data.notifications]);
 
   return (
     <div className="w-full h-full flex flex-col" style={{ backgroundColor: '#0a0e1a' }}>
@@ -304,7 +249,7 @@ const NotificationsComponent = () => {
           <span>All notifications acknowledged</span>
         )}
         <span className="mx-2">•</span>
-        <span>Showing {filteredNotifications.length} of {notifications.length} notifications</span>
+        <span>Showing {filteredNotifications.length} of {data.notifications.length} notifications</span>
       </div>
     </div>
   );

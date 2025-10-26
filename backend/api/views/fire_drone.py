@@ -1,20 +1,8 @@
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
-from rest_framework import status
 import time
 
-@api_view(['GET'])
-def fire_status(request):
-    # Mock response for now
-    data = {
-        "active_fires": [
-            {"id": 1, "lat": 34.0522, "lng": -118.2437, "status": "contained"},
-            {"id": 2, "lat": 35.0522, "lng": -117.2437, "status": "spreading"},
-        ]
-    }
-    return Response(data)
-
-# --- New: Mock data endpoints ---
+# --- Mock Fire/Drone Data ---
 now_ms = int(time.time() * 1000)
 
 MOCK_FIRE_DATA = [
@@ -53,57 +41,9 @@ MOCK_DRONE_DATA = [
     {"id": "D-6", "lat": 34.0820, "lng": -118.4420, "battery": 5, "water": 8, "status": "Critical", "timestamp": now_ms - int(24*60*60*1000*0.02)},
 ]
 
-def _group_most_recent(data, target_ts):
-    grouped = {}
-    for item in data:
-        grouped.setdefault(item['id'], []).append(item)
-    result = []
-    for id_, items in grouped.items():
-        items_sorted = sorted(items, key=lambda x: x['timestamp'])
-        candidates = [it for it in items_sorted if it['timestamp'] <= target_ts]
-        if candidates:
-            result.append(candidates[-1])
-    return result
-
 @api_view(['GET'])
-def data_at_time(request):
-    """
-    Query param: ts (milliseconds). If omitted, uses current time.
-    Returns: { "fires": [...], "drones": [...] }
-    """
-    ts_param = request.query_params.get('ts') or request.query_params.get('timestamp')
-    try:
-        target_ts = int(ts_param) if ts_param is not None else int(time.time() * 1000)
-    except (ValueError, TypeError):
-        return Response({"detail": "invalid timestamp"}, status=status.HTTP_400_BAD_REQUEST)
-
-    fires = _group_most_recent(MOCK_FIRE_DATA, target_ts)
-    drones = _group_most_recent(MOCK_DRONE_DATA, target_ts)
-    return Response({"fires": fires, "drones": drones})
-
-@api_view(['GET'])
-def data_between(request):
-    """
-    Query params: start, end (milliseconds). Both required.
-    Returns: { "fires": [...], "drones": [...] } (items retain timestamps)
-    """
-    start = request.query_params.get('start')
-    end = request.query_params.get('end')
-    try:
-        start_ts = int(start)
-        end_ts = int(end)
-    except (ValueError, TypeError):
-        return Response({"detail": "start and end must be integer milliseconds"}, status=status.HTTP_400_BAD_REQUEST)
-
-    fires = [f for f in MOCK_FIRE_DATA if start_ts <= f['timestamp'] <= end_ts]
-    drones = [d for d in MOCK_DRONE_DATA if start_ts <= d['timestamp'] <= end_ts]
-    return Response({"fires": fires, "drones": drones})
-
-@api_view(['GET'])
-def recent_data(request):
-    """
-    Returns all fire/drone records from now-24h to now.
-    """
+def recent_fire_drone_data(request):
+    """Returns fire/drone records from last 24h."""
     now_ms = int(time.time() * 1000)
     start_ts = now_ms - 24*60*60*1000
     fires = [f for f in MOCK_FIRE_DATA if start_ts <= f['timestamp'] <= now_ms]
